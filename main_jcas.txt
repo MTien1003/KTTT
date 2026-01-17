@@ -1,0 +1,208 @@
+close all;
+clear;
+clc;
+
+%% Variable initialization
+theta = (-90:0.1:90-0.1)*pi/180; % rad
+lambda = 1; % Wavelength
+M = 12; % Number of array elements
+
+% Sensing & communication steering vectors
+A = generateSteeringVector(theta, M, lambda);
+desDirs_c = 0.0; % Communication direction (sin domain)
+
+% Container to save the reference BF vector
+W_ref = zeros(M, size(desDirs_c, 2));
+
+%% Array response for the equivalent directions
+Q = 160; 
+phi = 1;
+eqDir = -1:phi/Q:1-phi/Q;
+Aq = generateQuantizedArrResponse(M, eqDir);
+
+%% Reference beam
+[PdM, P_refGen, W0] = generateDesPattern(eqDir, sin(desDirs_c), Aq);
+P_init = ones(size(eqDir));
+PM = P_init;
+alpha = sort([find(ismember(eqDir, eqDir(1:4:end))), find(PdM)]);
+
+%% Optimize (ILS Algorithm)
+W_ref(:, 1) = twoStepILS(50, alpha, Aq, W0, PM, PdM);
+
+%% Plot optimized beams
+%Chứng minh:
+%Thuật toán ILS có thể:
+%tạo mainlobe đúng hướng
+%triệt sidelobe tốt hơn ULA truyền thống
+figure(1);
+plot(eqDir, zeros(size(eqDir))); hold on
+plot(eqDir, 10*log10(PdM/max(PdM)), 'm-*')
+plot(eqDir, 10*log10(P_refGen/max(P_refGen)), '--black')
+plot(eqDir, 10*log10(abs(W_ref'*Aq)/max(abs(W_ref'*Aq))), 'r')
+legend('Initial', 'Desired', 'Conventional 12-element ULA', 'Optimized', ...
+    'Location', 'northoutside', 'NumColumns', 4)
+xlabel("Equivalent directions"); ylabel("|A|, dB")
+xlim([-1 1]); ylim([-35, 1])
+title('Beam Pattern Optimization');
+
+%% Displace the reference beam
+spacing=0.2;
+deltas = -0.8:spacing:0.8; 
+W_dd = zeros(M, size(deltas, 2));
+for i=1:size(deltas, 2)
+    W_dd(:, i) = displacePattern(W_ref, deltas(i), M);
+end
+
+%% Plot the beams coming from the optimized beamforming vectors
+figure(2);
+hold on
+for i = 1:size(deltas, 2)
+    plot(eqDir, 10*log10(abs(W_dd(:, i)'*Aq)/max(abs(W_dd(:, i)'*Aq))))    
+end
+xlim([-1 1]); ylim([-35, 0])
+xlabel("Equivalent directions"); ylabel("|A|, dB")
+grid on
+title('Displaced Scanning Beams');
+
+%% Combination of the sensing and communicating beams
+% Communication-sensing trade-off parameter
+ro = 0.5; 
+
+% Normalize beams (Common step)
+% Matlab versions vary, enforcing column-norm = 1
+for k=1:size(W_dd,2)
+    W_dd(:,k) = W_dd(:,k)/norm(W_dd(:,k));
+end
+
+W_t = zeros(M, size(deltas, 2)-1);
+
+% It is assumed that central beam is the one used for communication
+comBeamIdx = cast(size(deltas, 2)/2, 'uint32');
+if comBeamIdx == 0, comBeamIdx = 1; end
+
+% =========================================================================
+% %%% --- [CODE CŨ (GỐC): BẮT ĐẦU] (Đã comment lại) --- %%%
+% % Logic cũ: Cộng trực tiếp mà không tối ưu pha (mặc định pha = 0)
+% 
+% j=1;
+% for i = 1:size(W_dd, 2)
+%     if i~=comBeamIdx
+%         W_t(:, j) = sqrt(ro)*W_dd(:, comBeamIdx) + sqrt(1-ro)*W_dd(:, i);
+%         j = j + 1;
+%     end%if
+% end%for
+% %%% --- [CODE CŨ (GỐC): KẾT THÚC] --- %%%
+% =========================================================================
+
+
+
+% =========================================================================
+%%% --- [CODE MỚI (GA): BẮT ĐẦU] --- %%%
+% Logic mới: Gọi hàm ga_phase_solver.m để tìm pha tối ưu
+
+% 1. Tạo vector kênh truyền tại hướng người dùng (theta = 0 độ)
+h_user = generateSteeringVector(0, M, lambda); % Vector cột
+
+fprintf('Bắt đầu tối ưu hóa pha bằng GA (gọi file ga_phase_solver.m)...\n');
+j = 1;
+for i = 1:size(W_dd, 2)
+    if i ~= comBeamIdx
+        w_comm = W_dd(:, comBeamIdx); % Chùm liên lạc
+        w_sense = W_dd(:, i);         % Chùm cảm biến
+        
+        % --- GỌI HÀM TỪ FILE RIÊNG ---
+        [best_phi, ~] = ga_phase_solver(w_comm, w_sense, ro, h_user);
+        
+        % Tạo chùm tia tổng hợp với pha tối ưu
+        w_combined = sqrt(ro)*w_comm + sqrt(1-ro)*exp(1j*best_phi)*w_sense;
+        
+        % Lưu kết quả
+        W_t(:, j) = w_combined / norm(w_combined);
+        j = j + 1;
+    end
+end
+fprintf('Hoàn tất GA.\n');
+%%% --- [CODE MỚI (GA): KẾT THÚC] --- %%%
+% =========================================================================
+
+
+%% Plot a combined beam
+figure(3);
+% Plot using the first combined beam
+plot(eqDir, 10*log10(abs(W_t(:, 1)'*Aq)/max(abs(W_t(:, 1)'*Aq))))
+xlabel("\theta, rad"); ylabel("|A(\theta)|, dB")
+xlim([-1 1]); grid on
+title('Single Combined Beam (GA Optimized)');
+
+%% Plot the combined beams
+figure(4);
+hold on;
+for i = 1:size(W_t, 2)
+    % Angle, rad
+    response = abs(W_t(:, i)'*A);
+    plot(theta, 10*log10(response/max(response)));
+end
+xlabel("\theta, rad"); ylabel("|A(\theta)|, dB")
+grid on
+xlim([-pi/2, pi/2]); ylim([-15, 0])
+title('All Combined Beams (Final Result with GA)');
+
+%% === COMPARISON: ===
+
+% Chọn 1 sensing beam để so sánh (ví dụ beam đầu tiên)
+testIdx = 1;
+
+w_comm  = W_dd(:, comBeamIdx);
+w_sense = W_dd(:, testIdx);
+% ---- ORIGINAL METHOD (no phase optimization) ----
+w_orig = sqrt(ro)*w_comm + sqrt(1-ro)*w_sense;
+w_orig = w_orig / norm(w_orig);
+
+
+% ---- GA-BASED METHOD ----
+% GA tim pha toi uu
+[phi_ga, ~] = ga_phase_solver(w_comm, w_sense, ro, h_user);
+% pha cua sensing beam duoc xoay
+% communication & sensing cong pha tai user
+w_ga = sqrt(ro)*w_comm + sqrt(1-ro)*exp(1j*phi_ga)*w_sense;
+w_ga = w_ga / norm(w_ga);
+% tinh beam pattern
+P_orig = abs(w_orig' * Aq);
+P_ga   = abs(w_ga'   * Aq);
+
+P_orig_dB = 10*log10(P_orig / max(P_orig));
+P_ga_dB   = 10*log10(P_ga   / max(P_ga));
+
+
+
+% ---- ELITISM GA-BASED METHOD ----
+[phi_elite, ~] = ga_phase_solver_elitism(w_comm, w_sense, ro, h_user);
+
+w_elite = sqrt(ro)*w_comm + sqrt(1-ro)*exp(1j*phi_elite)*w_sense;
+w_elite = w_elite / norm(w_elite);
+
+P_elite = abs(w_elite' * Aq);
+P_elite_dB = 10*log10(P_elite / max(P_elite));
+
+figure(5);
+plot(eqDir, P_orig_dB, 'b--', 'LineWidth', 2); hold on;
+plot(eqDir, P_ga_dB,   'r',  'LineWidth', 2);
+plot(eqDir, P_elite_dB,'g-.','LineWidth', 2);
+
+grid on;
+xlabel('Equivalent directions');
+ylabel('|A|, dB');
+xlim([-1 1]);
+ylim([-35 0]);
+
+legend('Original method (no phase optimization)', ...
+       'Standard GA', ...
+       'Elitism GA', ...
+       'Location', 'northoutside', ...
+       'NumColumns', 3);
+
+title('Comparison of Original, GA, and Elitism GA Combined Beams');
+
+
+
+

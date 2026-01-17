@@ -1,0 +1,106 @@
+function [best_phi, max_power] = ga_phase_solver_elitism(w_c, w_s, rho, h_channel)
+% GA_PHASE_SOLVER_ELITISM
+% Elitism Genetic Algorithm for phase optimization in JCAS
+%
+% Input:
+%   w_c       : Communication beamforming vector (Mx1)
+%   w_s       : Sensing beamforming vector (Mx1)
+%   rho       : Communication–sensing power trade-off (0<rho<1)
+%   h_channel : Channel / steering vector towards the user (Mx1)
+%
+% Output:
+%   best_phi  : Optimal relative phase
+%   max_power: Maximum received power |h^H w|^2
+
+    %% GA parameters
+    pop_size      = 50;     % Population size
+    generations   = 30;     % Number of generations
+    mutation_rate = 0.1;    % Mutation probability
+    elite_count   = 2;      % Giữ 2 cá thể tốt nhất 
+
+    %% Initialize population (phase in [-pi, pi])
+    population = (rand(pop_size,1)*2*pi) - pi;
+    best_phi  = 0;
+    max_power = -inf;
+
+    %% Evolution loop
+    for gen = 1:generations
+        %% 1. Đánh giá Fitness 
+        fitness = zeros(pop_size,1);
+        for i = 1:pop_size
+            phi = population(i);
+            % Combined beam with phase phi
+            w_total = sqrt(rho)*w_c + sqrt(1-rho)*exp(1j*phi)*w_s;
+            w_total = w_total / norm(w_total);
+            % Fitness: received power
+            fitness(i) = abs(h_channel' * w_total)^2;
+        end
+
+        %% 2. Sắp xếp quần thể theo giảm dần độ thích hợp
+        [fitness, idx] = sort(fitness, 'descend');
+        population = population(idx);
+
+        % Cập nhật nghiệm tốt nhất toàn cục
+        if fitness(1) > max_power
+            max_power = fitness(1);
+            best_phi  = population(1);
+        end
+
+        %% 3. Giữ cá thể tốt nhất ( 2 cá thể tốt nhất được copy thẳng)
+        new_pop = zeros(pop_size,1);
+        new_pop(1:elite_count) = population(1:elite_count);
+
+        %% 4. Sinh phần còn lại của quần thể
+        k = elite_count + 1;
+        while k <= pop_size
+            % Chọn lọc
+
+            % --- Tournament selection (size = 2) ---
+            % Chọn ngẫu nhiên 2 cá thể, giữ cá thể tốt hơn
+            i1 = randi(pop_size); i2 = randi(pop_size);
+            if fitness(i1) > fitness(i2)
+                p1 = population(i1);
+            else
+                p1 = population(i2);
+            end
+
+            i3 = randi(pop_size); i4 = randi(pop_size);
+            if fitness(i3) > fitness(i4)
+                p2 = population(i3);
+            else
+                p2 = population(i4);
+            end
+            % Lai ghép
+            % --- Arithmetic crossover ---
+            if rand < 0.8
+                alpha = rand;
+                c1 = alpha*p1 + (1-alpha)*p2;
+                c2 = (1-alpha)*p1 + alpha*p2;
+            else
+                c1 = p1;
+                c2 = p2;
+            end
+
+            % Đột biến: Thêm nhiễu Gaussian, Tránh kẹt local optimum
+           
+            if rand < mutation_rate
+                c1 = c1 + randn*0.2;
+            end
+            if rand < mutation_rate
+                c2 = c2 + randn*0.2;
+            end
+
+            % --- Chuẩn hóa miền phapha, ép về [-pi, pi] ---
+            c1 = mod(c1 + pi, 2*pi) - pi;
+            c2 = mod(c2 + pi, 2*pi) - pi;
+
+            new_pop(k) = c1;
+            if k+1 <= pop_size
+                new_pop(k+1) = c2;
+            end
+            k = k + 2;
+        end
+        % Cập nhật quần thể
+        population = new_pop;
+    end
+end

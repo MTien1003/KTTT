@@ -1,0 +1,78 @@
+function [best_phi, max_power] = ga_phase_solver(w_c, w_s, rho, h_channel)
+    % GA_PHASE_SOLVER: Tìm góc pha tối ưu dùng thuật toán di truyền
+    % Input:
+    %   w_c: Vector chùm tia liên lạc
+    %   w_s: Vector chùm tia cảm biến
+    %   rho: Hệ số phân bổ công suất
+    %   h_channel: Vector kênh truyền (hoặc steering vector tại hướng User)
+    
+    %% Cấu hình GA
+    pop_size = 50;          % Kích thước quần thể (50 pha khác nhau)
+    generations = 30;       % Số thế hệ (đủ để hội tụ bài toán này)
+    mutation_rate = 0.1;    % Tỷ lệ đột biến
+    
+    % Khởi tạo quần thể: Góc pha ngẫu nhiên [-pi, pi]
+    population = (rand(pop_size, 1) * 2 * pi) - pi;
+    
+    best_phi = 0; % Pha tốt nhất từng gặp
+    max_power = -inf; % Fitness lớn nhất từng đạt 
+    
+    %% Vòng lặp tiến hóa
+    for gen = 1:generations
+        % 1. Đánh giá (Fitness Evaluation)
+        fitness = zeros(pop_size, 1);
+        for i = 1:pop_size
+            phi = population(i);
+            % Tạo vector tổng hợp
+            w_total = sqrt(rho)*w_c + sqrt(1-rho)*exp(1j*phi)*w_s;
+            w_total = w_total / norm(w_total); % Chuẩn hóa năng lượng
+            
+            % Hàm mục tiêu: Công suất thu |h^H * w|^2
+            fitness(i) = abs(h_channel' * w_total)^2;
+        end
+        
+        % Cập nhật cá thể tốt nhất toàn cục
+        [curr_max, idx] = max(fitness);
+        if curr_max > max_power
+            max_power = curr_max;
+            best_phi = population(idx);
+        end
+        
+        % 2. Chọn lọc (Tournament Selection)(Chọn lọc theo kiểu "đấu loại")
+        %  chọn cho đến khi new_pop có pop_size cá thể
+        new_pop = zeros(pop_size, 1);
+        for i = 1:pop_size
+            r = randperm(pop_size, 2);% Chọn ngẫu nhiên 2 cá thể, lấy cá thể fitness cao hơn
+            if fitness(r(1)) > fitness(r(2))
+                new_pop(i) = population(r(1));
+            else
+                new_pop(i) = population(r(2));
+            end
+        end
+        
+        % 3. Lai ghép (Crossover)
+        for i = 1:2:pop_size-1
+            % 0.8 là giá trị phổ biến trong GA, giúp cân bằng giữa khai
+            % thác nghiệm tốt và giữ ổn định quần thể
+            % 80% cặp cha mẹ được lai
+            % 20% giữ nguyên
+            if rand() < 0.8 
+                alpha = rand();
+                p1 = new_pop(i);
+                p2 = new_pop(i+1);
+                new_pop(i) = alpha*p1 + (1-alpha)*p2; % Con là tổ hợp tuyến tính của cha mẹ
+                new_pop(i+1) = (1-alpha)*p1 + alpha*p2;
+            end
+        end
+        
+        % 4. Đột biến (Mutation)
+        mask = rand(pop_size, 1) < mutation_rate;   % 10% cá thể bị đột biến
+        noise = randn(sum(mask), 1) * 0.2; % Nhiễu Gaussian sigma=0.2
+        new_pop(mask) = new_pop(mask) + noise;
+        
+        % Giới hạn pha trong [-pi, pi]
+        new_pop = mod(new_pop + pi, 2*pi) - pi;
+        
+        population = new_pop;
+    end
+end
